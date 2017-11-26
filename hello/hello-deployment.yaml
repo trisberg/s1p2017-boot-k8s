@@ -1,0 +1,26 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    run: hello
+  name: hello
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      run: hello
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        run: hello
+    spec:
+      containers:
+      - image: trisberg/hello:0.0.1
+        name: hello
+        ports:
+        - containerPort: 8080
+        resources: {}
+status: {}

@@ -1,0 +1,121 @@
+== Demo - Hello App deployed on Kubernetes
+
+Simple Hello Spring Boot app deployment on Minikube
+
+==== Start Minikube 
+
+- Install Minikube from https://kubernetes.io/docs/tasks/tools/install-minikube/
+
+- Install `kubectl` from https://kubernetes.io/docs/tasks/tools/install-kubectl/
+
+Then, start Minikube:
+
+	minikube start
+
+==== Create and run a simple Spring Boot app
+
+. Create a simple Boot app (You can also use https://start.spring.io/[Spring Initializr] web interface)
++
+----
+curl https://start.spring.io/starter.zip -d bootVersion=2.0.0.M5 \
+     -d dependencies=web,actuator \
+     -d groupId=com.springdeveloper.k8s -d artifactId=hello \
+     -d name=hello -d baseDir=hello -o hello.zip
+unzip hello.zip
+cd hello
+----
+
+NOTE: We are using the most Spring Boot 2.0 M5, as of Nov 6 there is a new M6 milestone available.
+
+. Add a `@RestController` and a mapping for `/hello` (the bold parts are the additions):
++
+.src/main/java/com/springdeveloper/k8s/demo/HelloApplication.java
+[source,subs=+quotes]
+----
+package com.springdeveloper.k8s.hello;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+*import org.springframework.web.bind.annotation.GetMapping;*
+*import org.springframework.web.bind.annotation.RestController;*
+
+@SpringBootApplication
+public class HelloApplication {
+	public static void main(String[] args) {
+		SpringApplication.run(HelloApplication.class, args);
+	}
+
+	*@RestController*
+	*class HelloController {*
+		*@GetMapping("/hello")*
+		*String hello() {*
+			*return "Hello Kubernauts!";*
+		*}*
+	*}*
+}
+----
+
+. Add a property enabling the `/application/env` endpoint. This allows us to inspect environment variables added by Kubernetes.
++
+.src/main/resources/application.properties
+----
+endpoints.env.enabled=true
+----
+
+. Create a `Dockerfile` so we can package this app as a Docker image
++
+.Dockerfile
+----
+FROM java:8-alpine
+VOLUME /tmp
+ADD ./target/hello-0.0.1-SNAPSHOT.jar /hello.jar
+RUN sh -c 'touch /hello.jar'
+ENTRYPOINT ["java","-Djava.security.egd=file:/dev/./urandom","-jar","/hello.jar"]
+----
+
+. Build the app and the Docker image 
++
+NOTE: We are sharing the Docker environment used by Minikube
++
+----
+eval $(minikube docker-env)
+./mvnw clean package
+docker build -t $USER/hello:0.0.1 .
+----
+
+. Run a Kubernetes deployment on the running Minikube cluster
++
+----
+kubectl run hello --image $USER/hello:0.0.1 --port 8080
+kubectl expose deployment hello --type=NodePort
+----
+
+. Test the app
++
+----
+curl $(minikube service hello --url)/hello
+----
+
+. Inspect environment variables and Kubernetes deployment/service yaml
++
+----
+curl $(minikube service hello --url)/application/env | python -m json.tool
+kubectl get deploy/hello -o yaml
+kubectl get svc/hello -o yaml
+----
+
+. Create Deployment and Service YAML files for future repeatable deployments
++
+ProTip from Joe Beda at Heptio: https://blog.heptio.com/using-kubectl-to-jumpstart-a-yaml-file-heptioprotip-6f5b8a63a3ea
++
+----
+kubectl run hello --image $USER/hello:0.0.1 --port 8080 -o yaml --dry-run \ 
+    > hello-deployment.yaml
+kubectl expose deployment hello --type=NodePort -o yaml --dry-run > hello-svc.yaml
+----
+
+. Delete the resources created for `hello`
++
+----
+kubectl delete all -l run=hello
+----

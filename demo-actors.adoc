@@ -1,0 +1,421 @@
+== Demo - Actors Microservice for Kubernetes
+
+A Simple REST Repository App for managing Actors
+
+==== Create the app and the config for local testing
+
+. Create a small CRUD JPA Repository app
++
+----
+curl https://start.spring.io/starter.zip -d bootVersion=2.0.0.M5 \
+    -d dependencies=web,actuator,jpa,data-rest,mysql,hsql \
+    -d groupId=com.springdeveloper.k8s -d artifactId=actors \
+    -d name=actors -d baseDir=actors -o actors.zip
+unzip actors.zip
+cd actors
+----
+
+. Add an Actor Entity
++
+.Actor.java
+[source,java]
+----
+package com.springdeveloper.k8s.actors;
+
+import javax.persistence.Entity;
+import javax.persistence.GeneratedValue;
+import javax.persistence.Id;
+
+@Entity
+public class Actor {
+
+	@Id
+	@GeneratedValue
+	Long id;
+
+	String name;
+
+	int age;
+
+	public Long getId() {
+		return id;
+	}
+
+	public String getName() {
+		return name;
+	}
+
+	public void setName(String name) {
+		this.name = name;
+	}
+
+	public int getAge() {
+		return age;
+	}
+
+	public void setAge(int age) {
+		this.age = age;
+	}
+}
+----
+
+. Add an ActorRepository
++
+.ActorRepository.java
+[source,java]
+----
+package com.springdeveloper.k8s.actors;
+
+import java.util.List;
+
+import org.springframework.data.repository.PagingAndSortingRepository;
+import org.springframework.data.repository.query.Param;
+
+public interface ActorRepository extends PagingAndSortingRepository<Actor, Long> {
+
+	List<Actor> findByName(@Param("name") String name);
+
+}
+----
+
+. Create default properties file for running app locally
++
+.application-default.properties
+[source,props]
+----
+endpoints.env.enabled=true
+spring.datasource.url=jdbc:hsqldb:file:target/testdb
+spring.datasource.username=sa
+spring.jpa.hibernate.ddl-auto=create
+spring.datasource.initialize=true
+----
+
+. Build and run the app locally
++
+----
+./mvnw clean package
+java -jar target/actors-0.0.1-SNAPSHOT.jar
+----
+
+. You can add actor records:
++
+----
+curl -i -X POST -H "Content-Type:application/json" -d "{  \"name\" : \"Dolph Lundgren\",  \"age\" : 59 }" http://localhost:8080/actors
+----
+
+. Test
++
+----
+curl http://localhost:8080/actors | python -m json.tool
+----
+
+==== Create a MySQL database deployment and service
+
+. Configure a MySQL deployment and service
++
+.mysql/mysql-deployment.yaml
+[source,yaml]
+----
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+      - image: mysql:5.6
+        name: mysql
+        env:
+          - name: MYSQL_ROOT_PASSWORD
+            # You can change this password - if you do change the base64 encoded value in the secrets file
+            value: yourpassword
+        ports:
+          - containerPort: 3306
+            name: mysql
+        volumeMounts:
+          - name: data
+            mountPath: /var/lib/mysql
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: mysql
+----
++
+.mysql/mysql-svc.yaml
+[source,yaml]
+----
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+spec:
+  ports:
+    - port: 3306
+  selector:
+    app: mysql
+----
++
+.mysql/mysql-pvc.yaml
+[source,yaml]
+----
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+  annotations:
+    volume.alpha.kubernetes.io/storage-class: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 8Gi
+----
++
+.mysql/mysql-secrets.yaml
+[source,yaml]
+----
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql
+  labels:
+    app: mysql
+data:
+  mysql-root-password: eW91cnBhc3N3b3Jk
+----
+
+. Deploy the MySQL database
++
+----
+kubectl apply -f ./mysql/
+----
+
+==== Add Kubernetes configuration
+
+. Add config properties for running on Kubernetes
++
+.application-kubernetes.properties
+[source,props]
+----
+endpoints.env.enabled=true
+spring.jpa.hibernate.ddl-auto=update
+spring.datasource.initialize=false
+----
+
+. Add `Dockerfile` and Docker Maven plug-in to the `pom.xml`. We are using the most recent https://github.com/spotify/dockerfile-maven[Spotify plugin].
++
+.Dockerfile
+[source]
+----
+FROM java:8-alpine
+VOLUME /tmp
+ARG JAR_FILE
+ADD ./target/${JAR_FILE} /actors.jar
+RUN sh -c 'touch /actors.jar'
+ENTRYPOINT ["java","-Djava.security.egd=file:/dev/./urandom","-jar","/actors.jar"]
+----
++
+.pom.xml
+[source,xml]
+----
+...
+	<build>
+		<plugins>
+...
+ 			<plugin>
+				<groupId>com.spotify</groupId>
+				<artifactId>dockerfile-maven-plugin</artifactId>
+				<version>1.3.6</version>
+				<configuration>
+					<repository>${user.name}/${project.artifactId}</repository>
+					<tag>${project.version}</tag>
+					<buildArgs>
+						<JAR_FILE>${project.build.finalName}.jar</JAR_FILE>
+					</buildArgs>
+				</configuration>
+			</plugin>
+...
+		</plugins>
+	</build>
+...
+----
+
+. Downgrade Hibernate version
++
+WARNING: We need to downgrade the Hibernate version. The most recent version throws an error when using "spring.jpa.hibernate.ddl-auto=update" and the tables already exist.
++
+.pom.xml
+[source,xml]
+----
+...
+		<!-- Downgrade Hibernate so we can use "spring.jpa.hibernate.ddl-auto=update" -->
+		<dependency>
+			<groupId>org.hibernate</groupId>
+			<artifactId>hibernate-core</artifactId>
+			<version>4.3.10.Final</version>
+		</dependency>
+		<dependency>
+			<groupId>org.hibernate</groupId>
+			<artifactId>hibernate-entitymanager</artifactId>
+			<version>4.3.10.Final</version>
+		</dependency>
+...
+----
+
+. Create the Kubernetes configuration files for the app
++
+.config/actors-svc.yaml
+[source,yaml]
+----
+kind: Service
+apiVersion: v1
+metadata:
+  name: actors
+  labels:
+    app: actors
+spec:
+  # If you are running k8s on a local dev box or using minikube, you can use type NodePort instead of LoadBalancer
+  type: NodePort
+  ports:
+    - port: 80
+  selector:
+    app: actors
+----
++
+.config/actors-deployment.yaml
+[source,yaml]
+----
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: actors
+  labels:
+    app: actors
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: actors
+    spec:
+      containers:
+      - name: actors
+        image: trisberg/actors:0.0.1-SNAPSHOT
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+        resources:
+          limits:
+            cpu: 1.0
+            memory: 1024Mi
+          requests:
+            cpu: 0.5
+            memory: 640Mi
+        livenessProbe:
+          httpGet:
+            path: /application/status
+            port: 80
+          initialDelaySeconds: 90
+          periodSeconds: 15
+          timeoutSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /application/status
+            port: 80
+          initialDelaySeconds: 45
+          periodSeconds: 15
+          timeoutSeconds: 5
+        env:
+        - name: SERVER_PORT
+          value: '80'
+        - name: SPRING_PROFILES_ACTIVE
+          value: kubernetes
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql
+              key: mysql-root-password
+        volumeMounts:
+        - name: application-config 
+          mountPath: "/config" 
+          readOnly: true
+      volumes:
+      - name: application-config
+        configMap:
+          name: actors 
+          items:
+          - key: application.yaml 
+            path: application-kubernetes.yaml
+----
++
+.config/actors-config.yaml
+[source,yaml]
+----
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: actors
+  labels:
+    app: actors
+data:
+  application.yaml: |-
+    security:
+      basic:
+        enabled: false
+    spring:
+      datasource:
+        url: jdbc:mysql://${MYSQL_SERVICE_HOST}:${MYSQL_SERVICE_PORT}/mysql
+        username: root
+        password: ${mysql-root-password}
+        driverClassName: com.mysql.jdbc.Driver
+        testOnBorrow: true
+        validationQuery: "SELECT 1"
+----
+
+==== Deploy app on Kubernetes and test
+
+. Build app and Docker image
++
+NOTE: We are sharing the Docker environment used by Minikube
++
+----
+eval $(minikube docker-env)
+./mvnw clean package dockerfile:build
+----
+
+. Deploy app to k8s
++
+----
+kubectl apply -f config/
+----
+
+. Get status
++
+----
+$ kubectl get all
+----
+
+. Add some actor records
++
+We need to look up the IP address of the service and then POST some data to it and test retreiving them:
++
+[source,bash]
+----
+export ACTORS_URL="$(minikube service actors --url)"
+curl -i -X POST -H "Content-Type:application/json" -d "{  \"name\" : \"Dolph Lundgren\",  \"age\" : 59 }" $ACTORS_URL/actors
+curl -i -X POST -H "Content-Type:application/json" -d "{  \"name\" : \"Jack Nicholson\",  \"age\" : 80 }" $ACTORS_URL/actors
+curl -i -X POST -H "Content-Type:application/json" -d "{  \"name\" : \"Meryl Streep\",  \"age\" : 68 }" $ACTORS_URL/actors
+curl $ACTORS_URL/actors
+----
