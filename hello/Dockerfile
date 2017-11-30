@@ -1,4 +1,4 @@
-FROM java:8-alpine
+FROM openjdk:8-alpine
 VOLUME /tmp
 ADD ./target/hello-0.0.1-SNAPSHOT.jar /hello.jar
 RUN sh -c 'touch /hello.jar'
